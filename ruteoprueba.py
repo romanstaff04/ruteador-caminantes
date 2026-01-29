@@ -2,37 +2,60 @@ import streamlit as st
 import pandas as pd
 import folium
 from streamlit_folium import st_folium
-import os
-import glob
 
-# Definir carpeta Ruteador/viajes en el escritorio
-carpeta_ruteador = os.path.join(os.path.expanduser("~"), "Desktop", "Ruteador")
-carpeta_viajes = os.path.join(carpeta_ruteador, "viajes")
-os.makedirs(carpeta_viajes, exist_ok=True)
+# ===============================
+# TÍTULO + SUBIDA DE ARCHIVO
+# ===============================
+st.title("Programa de Ruteo Centralizado Caminantes")
 
-# Cargar datos una sola vez
+archivo = st.file_uploader(
+    "📂 Subí el archivo de caminantes (.xlsx)",
+    type=["xlsx"]
+)
+
+if not archivo:
+    st.info("Esperando que subas un archivo para comenzar.")
+    st.stop()
+
+# ===============================
+# CARGA Y LIMPIEZA DEL EXCEL
+# ===============================
+df = pd.read_excel(
+    archivo,
+    dtype={"Equipo": str},
+    engine="openpyxl"
+)
+
+df["Equipo"] = (
+    df["Equipo"]
+    .astype(str)
+    .str.replace(r"\.0$", "", regex=True)
+)
+
+df = df.dropna(subset=["Latitud", "Longitud"]).copy()
+
+# ===============================
+# SESSION STATE (solo una vez)
+# ===============================
 if "con_geo" not in st.session_state:
-    entrada = os.path.join(carpeta_ruteador, "caminantes.xlsx")
-    df = pd.read_excel(entrada, dtype={"Equipo": str}, engine="openpyxl")
-    df["Equipo"] = df["Equipo"].astype(str).str.replace(r"\.0$", "", regex=True)
-    df = df.dropna(subset=["Latitud", "Longitud"]).copy()
     st.session_state.con_geo = df
 
-    # Consolidar equipos con misma geo
     df_grouped = (
         df.groupby(["Latitud", "Longitud"])["Equipo"]
         .apply(lambda x: ", ".join(sorted(set(x))))
         .reset_index()
     )
+
     st.session_state.consolidado = df_grouped
 
-    # Diccionario para búsquedas rápidas
     st.session_state.coord_map = {
         (row["Latitud"], row["Longitud"]): row["Equipo"]
         for _, row in df_grouped.iterrows()
     }
 
-# Inicializar variables de sesión
+# ===============================
+# VARIABLES DE SESIÓN
+# ===============================
 for key, default in {
     "seleccionados": [],
     "ruta_coords": [],
@@ -47,21 +70,23 @@ for key, default in {
     if key not in st.session_state:
         st.session_state[key] = default
 
-st.title("Programa de Ruteo Centralizado Caminantes")
-
-# Botón para actualizar la ruta
+# ===============================
+# SIDEBAR – BOTÓN ACTUALIZAR RUTA
+# ===============================
 if st.sidebar.button("Actualizar ruta") and len(st.session_state.ruta_coords) >= 2:
     st.session_state.ruta_coords_fija = st.session_state.ruta_coords.copy()
     st.session_state.ruta_dibujada = True
 
-# Crear mapa
+# ===============================
+# MAPA
+# ===============================
 m = folium.Map(
     location=st.session_state.map_center,
     zoom_start=st.session_state.map_zoom,
     tiles="OpenStreetMap"
 )
 
-# Dibujar marcadores consolidados
+# Marcadores consolidados
 for lat, lng, equipos in zip(
     st.session_state.consolidado["Latitud"],
     st.session_state.consolidado["Longitud"],
@@ -76,7 +101,7 @@ for lat, lng, equipos in zip(
         tooltip=equipos
     ).add_to(m)
 
-# Dibujar la ruta
+# Ruta dibujada
 if st.session_state.ruta_dibujada and len(st.session_state.ruta_coords_fija) >= 2:
     folium.PolyLine(
         locations=st.session_state.ruta_coords_fija,
@@ -85,7 +110,9 @@ if st.session_state.ruta_dibujada and len(st.session_state.ruta_coords_fija) >= 
         opacity=0.8
     ).add_to(m)
 
-# Capturar clics
+# ===============================
+# INTERACCIÓN CON EL MAPA
+# ===============================
 mapa = st_folium(
     m,
     width=800,
@@ -107,114 +134,85 @@ if mapa and mapa.get("last_object_clicked"):
             st.session_state.seleccionados.append(eq_nombre)
             st.session_state.ruta_coords.append((click_lat, click_lng))
 
-# Sidebar selección
+# ===============================
+# SIDEBAR – SELECCIÓN
+# ===============================
 st.sidebar.header("Selección actual")
+
 if st.session_state.seleccionados:
     for i, eq in reversed(list(enumerate(st.session_state.seleccionados, start=1))):
         st.sidebar.write(f"{i}. {eq}")
 else:
-    st.sidebar.write("No hay elementos seleccionados aún.")
+    st.sidebar.write("No hay elementos seleccionados.")
 
-# Cambiar orden
+# ===============================
+# REORDENAR
+# ===============================
 if st.session_state.seleccionados:
-    equipo_a_mover = st.sidebar.selectbox("Cambiar orden de:", st.session_state.seleccionados)
+    equipo_a_mover = st.sidebar.selectbox(
+        "Cambiar orden de:",
+        st.session_state.seleccionados
+    )
+
     nueva_pos = st.sidebar.number_input(
         "Nueva posición:",
         min_value=1,
         max_value=len(st.session_state.seleccionados),
         value=st.session_state.seleccionados.index(equipo_a_mover) + 1
     )
+
     if st.sidebar.button("Reordenar"):
         idx = st.session_state.seleccionados.index(equipo_a_mover)
         coord = st.session_state.ruta_coords.pop(idx)
         st.session_state.seleccionados.pop(idx)
+
         st.session_state.seleccionados.insert(nueva_pos - 1, equipo_a_mover)
         st.session_state.ruta_coords.insert(nueva_pos - 1, coord)
-        st.sidebar.success(f"Equipo '{equipo_a_mover}' movido a la posición {nueva_pos}.")
 
-# Guardado de rutas con expansión de equipos
+        st.sidebar.success("Orden actualizado")
+
+# ===============================
+# GUARDAR Y DESCARGAR RUTA
+# ===============================
 st.sidebar.write("---")
-ruta_num = st.sidebar.text_input("Número de ruta para guardar:", "")
-if st.sidebar.button("Guardar ruta en Excel"):
+ruta_num = st.sidebar.text_input("Número de ruta:")
+
+if st.sidebar.button("Guardar ruta"):
     if st.session_state.seleccionados and ruta_num.strip():
-        equipos_expandidos = []
+        equipos = []
         latitudes = []
         longitudes = []
 
-        for eq, (lat, lng) in zip(st.session_state.seleccionados, st.session_state.ruta_coords):
-            eqs = [e.strip() for e in eq.split(",")]
-            for e in eqs:
-                equipos_expandidos.append(e)
+        for eq, (lat, lng) in zip(
+            st.session_state.seleccionados,
+            st.session_state.ruta_coords
+        ):
+            for e in eq.split(","):
+                equipos.append(e.strip())
                 latitudes.append(lat)
                 longitudes.append(lng)
 
         ruta_df = pd.DataFrame({
-            "Ruta": [ruta_num] * len(equipos_expandidos),
-            "Orden": list(range(1, len(equipos_expandidos) + 1)),
-            "Equipo": equipos_expandidos,
+            "Ruta": ruta_num,
+            "Orden": range(1, len(equipos) + 1),
+            "Equipo": equipos,
             "Latitud": latitudes,
-            "Longitud": longitudes,
+            "Longitud": longitudes
         })
-        archivo = os.path.join(carpeta_viajes, f"ruta_{ruta_num}.xlsx")
-        ruta_df.to_excel(archivo, index=False)
-        st.sidebar.success(f"Ruta guardada en: {archivo}")
 
-        # Filtrar equipos ya ruteados
-        equipos_guardados = set(equipos_expandidos)
-        st.session_state.con_geo = st.session_state.con_geo[
-            ~st.session_state.con_geo["Equipo"].isin(equipos_guardados)
-        ].copy()
+        archivo_salida = f"ruta_{ruta_num}.xlsx"
+        ruta_df.to_excel(archivo_salida, index=False)
 
-        # Recalcular consolidado
-        df_grouped = (
-            st.session_state.con_geo
-            .groupby(["Latitud", "Longitud"])["Equipo"]
-            .apply(lambda x: ", ".join(sorted(set(x))))
-            .reset_index()
+        st.download_button(
+            "⬇️ Descargar ruta",
+            data=open(archivo_salida, "rb"),
+            file_name=archivo_salida,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-        st.session_state.consolidado = df_grouped
-        st.session_state.coord_map = {
-            (row["Latitud"], row["Longitud"]): row["Equipo"]
-            for _, row in df_grouped.iterrows()
-        }
-
-        # Vaciar selección y ruta
-        st.session_state.seleccionados.clear()
-        st.session_state.ruta_coords.clear()
-        st.session_state.ruta_coords_fija.clear()
-        st.session_state.ruta_dibujada = False
-
-        # Forzar actualización inmediata del mapa
-        st.rerun()
     else:
-        st.sidebar.error("Debe seleccionar equipos y asignar un número de ruta.")
+        st.sidebar.error("Seleccioná equipos y asigná un número de ruta.")
 
-# Menú de viajes guardados
-st.sidebar.write("---")
-st.sidebar.subheader("Viajes guardados")
-
-rutas_guardadas = glob.glob(os.path.join(carpeta_viajes, "ruta_*.xlsx"))
-
-if rutas_guardadas:
-    ruta_seleccionada = st.sidebar.selectbox(
-        "Seleccionar un viaje:", rutas_guardadas, format_func=os.path.basename
-    )
-
-    if st.sidebar.button("Cargar viaje"):
-        ruta_df = pd.read_excel(ruta_seleccionada, engine="openpyxl")
-        st.write("Viaje cargado:", ruta_df)
-
-        st.session_state.seleccionados = ruta_df["Equipo"].astype(str).tolist()
-        st.session_state.ruta_coords = list(zip(ruta_df["Latitud"], ruta_df["Longitud"]))
-        st.session_state.ruta_coords_fija = st.session_state.ruta_coords.copy()
-        st.session_state.ruta_dibujada = True
-
-        st.sidebar.success(f"Viaje {os.path.basename(ruta_seleccionada)} cargado en el mapa.")
-else:
-    st.sidebar.write("No hay viajes guardados aún.")
-
-# Debug opcional
-if st.sidebar.checkbox("Mostrar debug"):
-    st.write("DEBUG seleccionados:", st.session_state.seleccionados)
-    st.write("DEBUG ruta_coords:", st.session_state.ruta_coords)
-    st.write("DEBUG ruta_coords_fija:", st.session_state.ruta_coords_fija)
+# ===============================
+# DEBUG (opcional)
+# ===============================
+# st.write("DEBUG:", st.session_state)
