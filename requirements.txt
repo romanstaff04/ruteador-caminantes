@@ -1,5 +1,7 @@
-streamlit
+streamlit==1.53.1
 pandas
 openpyxl
+numpy
 folium
 streamlit-folium
+python-dateutil
